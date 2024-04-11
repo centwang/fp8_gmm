@@ -1,9 +1,8 @@
 import os
 from pathlib import Path
-from setuptools import setup, find_packages
-import torch
-from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
+from setuptools import find_packages, setup
+from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 cwd = Path(os.path.dirname(os.path.abspath(__file__)))
 
@@ -17,27 +16,25 @@ ext_modules = [
         "fp8_gmm_backend",
         ["csrc/ops.cu", "csrc/fp8_gmm.cu"],
         libraries=["cuda"],
-        include_dirs = [
+        include_dirs=[
             f"{cwd}/third_party/cutlass/include/",
             f"{cwd}/third_party/cutlass/tools/util/include/",
-            f"{cwd}/csrc"
+            f"{cwd}/csrc",
         ],
         extra_compile_args={
-            "cxx": [
-                "-fopenmp", "-fPIC", "-Wno-strict-aliasing"
-            ],
+            "cxx": ["-fopenmp", "-fPIC", "-Wno-strict-aliasing"],
             "nvcc": nvcc_flags,
-        }
+        },
     )
 ]
 
 extra_deps = {}
 
-extra_deps['dev'] = [
-    'absl-py',
+extra_deps["dev"] = [
+    "absl-py",
 ]
 
-extra_deps['all'] = set(dep for deps in extra_deps.values() for dep in deps)
+extra_deps["all"] = set(dep for deps in extra_deps.values() for dep in deps)
 
 setup(
     name="fp8_gmm",
