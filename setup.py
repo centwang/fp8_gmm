@@ -14,7 +14,7 @@ nvcc_flags = [
 ext_modules = [
     CUDAExtension(
         "fp8_gmm_backend",
-        ["csrc/ops.cu", "csrc/fp8_gmm.cu"],
+        ["csrc/ops.cu", "csrc/fp8_gmm.cu", "csrc/multi_pointwise.cu"],
         libraries=["cuda"],
         include_dirs=[
             f"{cwd}/third_party/cutlass/include/",

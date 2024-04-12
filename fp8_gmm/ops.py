@@ -5,7 +5,7 @@ from transformer_engine.pytorch import cpp_extensions as tex
 from transformer_engine.pytorch.fp8 import get_fp8_te_dtype
 from transformer_engine.pytorch.module.base import TransformerEngineBaseModule, get_workspace
 
-from .backend import fp8_gmm
+from .backend import fp8_gmm, multi_quantize, multi_scale_mul
 
 
 def to_torch_dtype(dtype):
@@ -41,6 +41,10 @@ class _GroupedLinear(torch.autograd.Function):
         scale = fp8_meta["scaling_fwd"].scale
         scale_inv = fp8_meta["scaling_fwd"].scale_inv
         amax_history = fp8_meta["scaling_fwd"].amax_history
+        input_groups = []
+        input_fp8_groups = []
+        input_scales = []
+        input_amax_historys = []
         weight_groups = []
         weight_scales = []
         weight_fp8_groups = []
@@ -50,34 +54,17 @@ class _GroupedLinear(torch.autograd.Function):
         # TODO: write kernels to fuse multi cast and multi mul respectively.
         for i in range(num_groups):
             start, end = cumsum_group_sizes[i], cumsum_group_sizes[i + 1]
-            input_group = input[start:end]
-            input_fp8_group = input_fp8[start:end]
-            tex.cast_to_fp8_noalloc(
-                input_group,
-                scale[i * 3],
-                input_fp8_group,
-                amax_history[0][i * 3],
-                scale_inv[i * 3],
-                dtype,
-            )
-            if is_grad_enabled and input.requires_grad:
-                weight_groups.append(weight[i])
-                weight_scales.append(scale[i * 3 + 1])
-                weight_fp8_groups.append(weight_fp8[i])
-                weight_t_fp8_groups.append(weight_t_fp8[i])
-                weight_amax_historys.append(amax_history[0][i * 3 + 1])
-                weight_scale_invs.append(scale_inv[i * 3 + 1])
-            else:
-                weight_group = weight[i]
-                weight_fp8_group = weight_fp8[i]
-                tex.cast_to_fp8_noalloc(
-                    weight_group,
-                    scale[i * 3 + 1],
-                    weight_fp8_group,
-                    amax_history[0][i * 3 + 1],
-                    scale_inv[i * 3 + 1],
-                    dtype,
-                )
+            input_groups.append(input[start:end])
+            input_scales.append(scale[i * 3])
+            input_fp8_groups.append(input_fp8[start:end])
+            input_amax_historys.append(amax_history[0][i * 3])
+            weight_groups.append(weight[i])
+            weight_scales.append(scale[i * 3 + 1])
+            weight_fp8_groups.append(weight_fp8[i])
+            weight_t_fp8_groups.append(weight_t_fp8[i])
+            weight_amax_historys.append(amax_history[0][i * 3 + 1])
+            weight_scale_invs.append(scale_inv[i * 3 + 1])
+        multi_quantize(input_groups, input_fp8_groups, input_scales, input_amax_historys)
         if is_grad_enabled and input.requires_grad:
             tex.fused_multi_cast_transpose(
                 weight_groups,
@@ -88,10 +75,17 @@ class _GroupedLinear(torch.autograd.Function):
                 weight_scale_invs,
                 dtype,
             )
+        else:
+            multi_quantize(weight_groups, weight_fp8_groups, weight_scales, weight_amax_historys)
         out = fp8_gmm(input_fp8, weight_fp8, group_sizes_tensor)
+        out_groups = []
+        input_scale_invs = []
+        weight_scale_invs = []
         for i in range(num_groups):
-            out_group = out[cumsum_group_sizes[i] : cumsum_group_sizes[i + 1]]
-            torch.mul(out_group, scale_inv[i * 3] * scale_inv[i * 3 + 1], out=out_group)
+            out_groups.append(out[cumsum_group_sizes[i] : cumsum_group_sizes[i + 1]])
+            input_scale_invs.append(scale_inv[i * 3])
+            weight_scale_invs.append(scale_inv[i * 3 + 1])
+        multi_scale_mul(out_groups, input_scale_invs, weight_scale_invs)
         if is_grad_enabled:
             ctx.save_for_backward(input_fp8, weight_t_fp8, scale_inv.clone(), group_sizes_tensor)
             ctx.num_groups = num_groups
@@ -115,28 +109,28 @@ class _GroupedLinear(torch.autograd.Function):
         scale = fp8_meta["scaling_bwd"].scale
         scale_inv = fp8_meta["scaling_bwd"].scale_inv
         amax_history = fp8_meta["scaling_bwd"].amax_history
+        grad_out_groups = []
+        grad_out_fp8_groups = []
+        grad_out_scales = []
+        grad_out_amax_historys = []
         for i in range(num_groups):
             start, end = cumsum_group_sizes[i], cumsum_group_sizes[i + 1]
-            grad_out_group = grad_out[start:end]
-            grad_out_fp8_group = grad_out_fp8[start:end]
-            tex.cast_to_fp8_noalloc(
-                grad_out_group,
-                scale[i * 2],
-                grad_out_fp8_group,
-                amax_history[0][i * 2],
-                scale_inv[i * 2],
-                grad_out_dtype,
-            )
+            grad_out_groups.append(grad_out[start:end])
+            grad_out_fp8_groups.append(grad_out_fp8[start:end])
+            grad_out_scales.append(scale[i * 2])
+            grad_out_amax_historys.append(amax_history[0][i * 2])
+        multi_quantize(grad_out_groups, grad_out_fp8_groups, grad_out_scales, grad_out_amax_historys)
         grad_input = None
         if ctx.input_requires_grad:
             grad_input = fp8_gmm(grad_out_fp8, weight_t_fp8, group_sizes_tensor)
+            grad_input_groups = []
+            grad_out_scale_invs = []
+            weight_scale_invs = []
             for i in range(num_groups):
-                grad_input_group = grad_input[cumsum_group_sizes[i] : cumsum_group_sizes[i + 1]]
-                torch.mul(
-                    grad_input_group,
-                    scale_inv[i * 2] * fw_scale_inv[i * 3 + 1],
-                    out=grad_input_group,
-                )
+                grad_input_groups.append(grad_input[cumsum_group_sizes[i] : cumsum_group_sizes[i + 1]])
+                grad_out_scale_invs.append(scale_inv[i * 2])
+                weight_scale_invs.append(fw_scale_inv[i * 3 + 1])
+            multi_scale_mul(grad_input_groups, grad_out_scale_invs, weight_scale_invs)
         grad_weight = None
         if ctx.weight_requires_grad:
             grad_weight = torch.empty_like(

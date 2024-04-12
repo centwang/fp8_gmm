@@ -11,3 +11,11 @@ def fp8_gmm(a, b, batch_sizes, c=None):
         c = _fp8_allocate_output(a, b)
     backend.fp8_gmm(a, b, c, batch_sizes)
     return c
+
+
+def multi_quantize(inputs, outputs, scales, amaxes):
+    backend.multi_quantize(inputs, outputs, scales, amaxes)
+
+
+def multi_scale_mul(inputs, scales_1, scales_2):
+    backend.multi_scale_mul(inputs, scales_1, scales_2)
