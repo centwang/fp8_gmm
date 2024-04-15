@@ -1,5 +1,9 @@
 #include "multi_pointwise.h"
 
+#include <ATen/cuda/CUDAContext.h>
+#include <cuda_bf16.h>
+#include <cuda_fp8.h>
+
 namespace fp8_gmm {
 
 namespace {
@@ -42,6 +46,37 @@ struct MultiScaleMulArgs {
   int num_tensors;
 };
 
+template <int num_elems>
+__device__ __forceinline__ float warp_reduce_max(const float m) {
+  float tmp = m;
+#pragma unroll
+  for (int delta = num_elems / 2; delta > 0; delta /= 2) {
+    const float other_m = __shfl_down_sync(0xFFFFFFFF, tmp, delta);
+    __builtin_assume(tmp >= 0);
+    __builtin_assume(other_m >= 0);
+    tmp = fmaxf(tmp, other_m);
+  }
+  return tmp;
+}
+
+template <int num_warps, typename compute_t>
+__device__ __forceinline__ compute_t reduce_max(const compute_t m, const int warpid) {
+  __shared__ float staging[num_warps];
+  constexpr int warp_size = 32;
+  const float my_max = m;
+  const float my_warp_max = warp_reduce_max<warp_size>(my_max);
+  if (threadIdx.x % 32 == 0) {
+    staging[warpid] = my_warp_max;
+  }
+  __syncthreads();
+  compute_t result = 0;
+  if (warpid == 0) {
+    const float my_max = threadIdx.x < num_warps ? staging[threadIdx.x] : 0;
+    result = warp_reduce_max<num_warps>(my_max);
+  }
+  return result;
+}
+
 __device__ __forceinline__ void atomicMaxFloat(float* addr, const float value) {
   atomicMax(reinterpret_cast<int*>(addr), __float_as_int(value));
 }
@@ -64,7 +99,7 @@ __global__ void __launch_bounds__(kThreadsPerBlock) multi_quantize_kernel(MultiQ
   fp32* amax = reinterpret_cast<fp32*>(args.amax_list[tensor_id]);
   const int num_elements = args.num_elements_list[tensor_id];
 
-  bid -= args.block_range[tensor_id];
+  const int sub_bid = bid - args.block_range[tensor_id];
   const int warp_id = tid / THREADS_PER_WARP;
 
   using LoadT = aligned_vector<bf16, kNumElementsPerThread>;
@@ -74,7 +109,7 @@ __global__ void __launch_bounds__(kThreadsPerBlock) multi_quantize_kernel(MultiQ
   bf16 src[kNumElementsPerThread];
   OType dst[kNumElementsPerThread];
 
-  int id = bid * kNumElementsPerBlock + tid * kNumElementsPerThread;
+  int id = sub_bid * kNumElementsPerBlock + tid * kNumElementsPerThread;
   if constexpr (aligned) {
     LoadT* value = reinterpret_cast<LoadT*>(&src);
     *value = *reinterpret_cast<const LoadT*>(&input[id]);
@@ -87,7 +122,7 @@ __global__ void __launch_bounds__(kThreadsPerBlock) multi_quantize_kernel(MultiQ
     }
   }
   for (int i = 0; i < kNumElementsPerThread; ++i) {
-    fp32 val = static_cast<fp32>(src[i]);
+    fp32 val = __bfloat162float(src[i]);
     max = fmaxf(fabsf(val), max);
     dst[i] = static_cast<OType>(val * scale);
   }
@@ -121,19 +156,19 @@ __global__ void __launch_bounds__(kThreadsPerBlock) multi_scale_mul_kernel(Multi
   }
 
   bf16* input = reinterpret_cast<bf16*>(args.input_list[tensor_id]);
-  conat fp32* scale_ptr_1 = reinterpret_cast<fp32*>(args.scale_list_1[tensor_id]);
+  const fp32* scale_ptr_1 = reinterpret_cast<fp32*>(args.scale_list_1[tensor_id]);
   const fp32 scale_1 = scale_ptr_1 == nullptr ? 1 : *scale_ptr_1;
   const fp32* scale_ptr_2 = reinterpret_cast<fp32*>(args.scale_list_2[tensor_id]);
   const fp32 scale_2 = scale_ptr_2 == nullptr ? 1 : *scale_ptr_2;
   const int num_elements = args.num_elements_list[tensor_id];
 
-  bid -= args.block_range[tensor_id];
+  const int sub_bid = bid - args.block_range[tensor_id];
 
   using VecT = aligned_vector<bf16, kNumElementsPerThread>;
 
   bf16 src[kNumElementsPerThread];
 
-  int id = bid * kNumElementsPerBlock + tid * kNumElementsPerThread;
+  int id = sub_bid * kNumElementsPerBlock + tid * kNumElementsPerThread;
   if constexpr (aligned) {
     VecT* value = reinterpret_cast<VecT*>(&src);
     *value = *reinterpret_cast<const VecT*>(&input[id]);
@@ -146,7 +181,7 @@ __global__ void __launch_bounds__(kThreadsPerBlock) multi_scale_mul_kernel(Multi
     }
   }
   for (int i = 0; i < kNumElementsPerThread; ++i) {
-    src[i] *= static_cast<bf16>(scale_1 * scale_2);
+    src[i] *= __float2bfloat16(scale_1 * scale_2);
   }
   if constexpr (aligned) {
     VecT* value = reinterpret_cast<VecT*>(&src);
@@ -187,16 +222,16 @@ void MultiQuantize(std::vector<at::Tensor> input_list, std::vector<at::Tensor> o
     const int num_blocks = (num_elements + kNumElementsPerBlock - 1) / kNumElementsPerBlock;
     TORCH_CHECK(num_blocks <= kMaxBlocks);  // Not likely to happen
     const bool aligned = (num_elements % kNumElementsPerThread == 0 &&
-                          reinterpret_cast<uint64_t>(input_list[tensor_id].dptr) % input_vec_alignment == 0 &&
-                          reinterpret_cast<uint64_t>(output_list[tensor_id].dptr) % output_vec_alignment == 0);
+                          reinterpret_cast<uint64_t>(input_list[tensor_id].data_ptr()) % input_vec_alignment == 0 &&
+                          reinterpret_cast<uint64_t>(output_list[tensor_id].data_ptr()) % output_vec_alignment == 0);
     auto& kernel_args = aligned ? kernel_args_aligned : kernel_args_unaligned;
 
     // Add tensor to kernel argument struct
     const int pos = kernel_args.num_tensors;
-    kernel_args.input_list[pos] = const_cast<void*>(input_list[tensor_id].dptr);
-    kernel_args.output_list[pos] = output_list[tensor_id].dptr;
-    kernel_args.scale_list[pos] = scale_list[tensor_id].dptr;
-    kernel_args.amax_list[pos] = amax_list[tensor_id].dptr;
+    kernel_args.input_list[pos] = const_cast<void*>(input_list[tensor_id].data_ptr());
+    kernel_args.output_list[pos] = output_list[tensor_id].data_ptr();
+    kernel_args.scale_list[pos] = scale_list[tensor_id].data_ptr();
+    kernel_args.amax_list[pos] = amax_list[tensor_id].data_ptr();
     kernel_args.num_elements_list[pos] = num_elements;
     kernel_args.block_range[pos + 1] = kernel_args.block_range[pos] + num_blocks;
     kernel_args.num_tensors++;
@@ -249,14 +284,14 @@ void MultiScaleMul(std::vector<at::Tensor> input_list, std::vector<at::Tensor> s
     const int num_blocks = (num_elements + kNumElementsPerBlock - 1) / kNumElementsPerBlock;
     TORCH_CHECK(num_blocks <= kMaxBlocks);  // Not likely to happen
     const bool aligned = num_elements % kNumElementsPerThread == 0 &&
-                         reinterpret_cast<uint64_t>(input_list[tensor_id].dptr) % vec_alignment == 0;
+                         reinterpret_cast<uint64_t>(input_list[tensor_id].data_ptr()) % vec_alignment == 0;
     auto& kernel_args = aligned ? kernel_args_aligned : kernel_args_unaligned;
 
     // Add tensor to kernel argument struct
     const int pos = kernel_args.num_tensors;
-    kernel_args.input_list[pos] = const_cast<void*>(input_list[tensor_id].dptr);
-    kernel_args.scale_list_1[pos] = scale_list_1[tensor_id].dptr;
-    kernel_args.scale_list_2[pos] = scale_list_2[tensor_id].dptr;
+    kernel_args.input_list[pos] = const_cast<void*>(input_list[tensor_id].data_ptr());
+    kernel_args.scale_list_1[pos] = scale_list_1[tensor_id].data_ptr();
+    kernel_args.scale_list_2[pos] = scale_list_2[tensor_id].data_ptr();
     kernel_args.num_elements_list[pos] = num_elements;
     kernel_args.block_range[pos + 1] = kernel_args.block_range[pos] + num_blocks;
     kernel_args.num_tensors++;
