@@ -21,10 +21,9 @@ class _GroupedLinear(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, weight, group_sizes, fp8_meta, is_grad_enabled):
         num_groups = weight.size(0)
-        group_sizes_tensor = torch.tensor(group_sizes)
         cumsum_group_sizes = [0]
         for i in range(num_groups):
-            cumsum_group_sizes.append(cumsum_group_sizes[-1] + group_sizes[i])
+            cumsum_group_sizes.append(cumsum_group_sizes[-1] + group_sizes[i].item())
         dtype = get_fp8_te_dtype(fp8_meta["recipe"], fprop_tensor=True)
         torch_dtype = to_torch_dtype(dtype)
         input_fp8 = torch.empty(*input.size(), dtype=torch_dtype, device=input.device)
@@ -77,7 +76,7 @@ class _GroupedLinear(torch.autograd.Function):
             )
         else:
             multi_quantize(weight_groups, weight_fp8_groups, weight_scales, weight_amax_historys)
-        out = fp8_gmm(input_fp8, weight_fp8, group_sizes_tensor)
+        out = fp8_gmm(input_fp8, weight_fp8, group_sizes)
         out_groups = []
         input_scale_invs = []
         weight_scale_invs = []
@@ -87,7 +86,7 @@ class _GroupedLinear(torch.autograd.Function):
             weight_scale_invs.append(scale_inv[i * 3 + 1])
         multi_scale_mul(out_groups, input_scale_invs, weight_scale_invs)
         if is_grad_enabled:
-            ctx.save_for_backward(input_fp8, weight_t_fp8, scale_inv.clone(), group_sizes_tensor)
+            ctx.save_for_backward(input_fp8, weight_t_fp8, scale_inv.clone(), group_sizes)
             ctx.num_groups = num_groups
             ctx.cumsum_group_sizes = cumsum_group_sizes
             ctx.fp8_meta = fp8_meta
@@ -99,7 +98,7 @@ class _GroupedLinear(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_out):
-        (input_fp8, weight_t_fp8, fw_scale_inv, group_sizes_tensor) = ctx.saved_tensors
+        (input_fp8, weight_t_fp8, fw_scale_inv, group_sizes) = ctx.saved_tensors
         num_groups = ctx.num_groups
         cumsum_group_sizes = ctx.cumsum_group_sizes
         fp8_meta = ctx.fp8_meta
@@ -122,7 +121,7 @@ class _GroupedLinear(torch.autograd.Function):
         multi_quantize(grad_out_groups, grad_out_fp8_groups, grad_out_scales, grad_out_amax_historys)
         grad_input = None
         if ctx.input_requires_grad:
-            grad_input = fp8_gmm(grad_out_fp8, weight_t_fp8, group_sizes_tensor)
+            grad_input = fp8_gmm(grad_out_fp8, weight_t_fp8, group_sizes)
             grad_input_groups = []
             grad_out_scale_invs = []
             weight_scale_invs = []
