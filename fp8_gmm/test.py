@@ -72,16 +72,16 @@ class Bf16Module(torch.nn.Module):
 
 
 class Fp8Module(torch.nn.Module):
-    def __init__(self, n_embd, n_inner, n_experts, top_k):
+    def __init__(self, n_embd, n_inner, n_experts, top_k, dtype=torch.bfloat16, cutlass=False):
         super(Fp8Module, self).__init__()
         self.n_embd = n_embd
         self.n_inner = n_inner
         self.n_experts = n_experts
         self.top_k = top_k
         self.sort_end_bit = max(int(np.ceil(np.log2(n_experts))), 1)
-        self.gating_network = torch.nn.Linear(n_embd, n_experts, bias=False).to(torch.bfloat16).to("cuda")
-        self.grouped_linear1 = fp8_gmm_ops.GroupedLinear(n_embd, n_inner, n_experts, dtype=torch.bfloat16)
-        self.grouped_linear2 = fp8_gmm_ops.GroupedLinear(n_inner, n_embd, n_experts, dtype=torch.bfloat16)
+        self.gating_network = torch.nn.Linear(n_embd, n_experts, bias=False).to(dtype).to("cuda")
+        self.grouped_linear1 = fp8_gmm_ops.GroupedLinear(n_embd, n_inner, n_experts, dtype=dtype, cutlass=cutlass)
+        self.grouped_linear2 = fp8_gmm_ops.GroupedLinear(n_inner, n_embd, n_experts, dtype=dtype, cutlass=cutlass)
         self.act = torch.nn.GELU()
 
     def compute(self, x, tokens_per_expert, indices, bin_ids, expert_weights, bins, top_k):
@@ -104,20 +104,38 @@ class Fp8Module(torch.nn.Module):
         return self.compute(input, token_per_expert, indices, bin_ids, expert_weights, bins, self.top_k)
 
 
-# Bf16Module
-input = torch.randn(16, 1024, dtype=torch.bfloat16, device="cuda", requires_grad=True)
-model_bf16 = Bf16Module(1024, 768, 16, 2).to(torch.bfloat16).to("cuda")
+num_tokens, hidden_states, num_inner, num_experts, top_k = 16384, 4096, 6400, 16, 2
+dtype = torch.bfloat16
+
+# Bf16Module, warm-up the triton kernels (with auto-tune).
+input = torch.randn(num_tokens, hidden_states, dtype=dtype, device="cuda", requires_grad=True)
+model_bf16 = Bf16Module(hidden_states, num_inner, num_experts, top_k).to(dtype).to("cuda")
 out = model_bf16(input)
-out.backward(torch.randn(*out.size(), dtype=torch.bfloat16, device="cuda"))
+out.backward(torch.randn(*out.size(), dtype=dtype, device="cuda"))
+
+# Bf16Module run.
+input = torch.randn(num_tokens, hidden_states, dtype=dtype, device="cuda", requires_grad=True)
+out = model_bf16(input)
+out.backward(torch.randn(*out.size(), dtype=dtype, device="cuda"))
 print(out)
 print(input.grad)
 
-# Fp8Module
-input = torch.randn(16, 1024, dtype=torch.bfloat16, device="cuda", requires_grad=True)
-model_fp8 = Fp8Module(1024, 768, 16, 2)
+# Fp8Module, using cublasLtMatmul.
+input = torch.randn(num_tokens, hidden_states, dtype=dtype, device="cuda", requires_grad=True)
+model_fp8 = Fp8Module(hidden_states, num_inner, num_experts, top_k, dtype=dtype, cutlass=False)
 fp8_recipe = recipe.DelayedScaling(margin=0, interval=1, fp8_format=recipe.Format.HYBRID)
 with tex.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
     out = model_fp8(input)
-out.backward(torch.randn(*out.size(), dtype=torch.bfloat16, device="cuda"))
+out.backward(torch.randn(*out.size(), dtype=dtype, device="cuda"))
+print(out)
+print(input.grad)
+
+# Fp8Module, using cutlass grouped gemm.
+input = torch.randn(num_tokens, hidden_states, dtype=dtype, device="cuda", requires_grad=True)
+model_fp8 = Fp8Module(hidden_states, num_inner, num_experts, top_k, dtype=dtype, cutlass=True)
+fp8_recipe = recipe.DelayedScaling(margin=0, interval=1, fp8_format=recipe.Format.HYBRID)
+with tex.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
+    out = model_fp8(input)
+out.backward(torch.randn(*out.size(), dtype=dtype, device="cuda"))
 print(out)
 print(input.grad)
