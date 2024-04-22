@@ -1,4 +1,5 @@
 import math
+from time import time
 
 import megablocks.ops as mega_ops
 import numpy as np
@@ -112,30 +113,34 @@ input = torch.randn(num_tokens, hidden_states, dtype=dtype, device="cuda", requi
 model_bf16 = Bf16Module(hidden_states, num_inner, num_experts, top_k).to(dtype).to("cuda")
 out = model_bf16(input)
 out.backward(torch.randn(*out.size(), dtype=dtype, device="cuda"))
+torch.cuda.synchronize()
 
 # Bf16Module run.
 input = torch.randn(num_tokens, hidden_states, dtype=dtype, device="cuda", requires_grad=True)
+start = time()
 out = model_bf16(input)
 out.backward(torch.randn(*out.size(), dtype=dtype, device="cuda"))
-print(out)
-print(input.grad)
+torch.cuda.synchronize()
+print(f"Bf16Module run: {(time() - start) * 1000:.3f} ms")
 
 # Fp8Module, using cublasLtMatmul.
 input = torch.randn(num_tokens, hidden_states, dtype=dtype, device="cuda", requires_grad=True)
 model_fp8 = Fp8Module(hidden_states, num_inner, num_experts, top_k, dtype=dtype, cutlass=False)
 fp8_recipe = recipe.DelayedScaling(margin=0, interval=1, fp8_format=recipe.Format.HYBRID)
+start = time()
 with tex.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
     out = model_fp8(input)
 out.backward(torch.randn(*out.size(), dtype=dtype, device="cuda"))
-print(out)
-print(input.grad)
+torch.cuda.synchronize()
+print(f"Fp8Module cublasLtMatmul run: {(time() - start) * 1000:.3f} ms")
 
 # Fp8Module, using cutlass grouped gemm.
 input = torch.randn(num_tokens, hidden_states, dtype=dtype, device="cuda", requires_grad=True)
 model_fp8 = Fp8Module(hidden_states, num_inner, num_experts, top_k, dtype=dtype, cutlass=True)
 fp8_recipe = recipe.DelayedScaling(margin=0, interval=1, fp8_format=recipe.Format.HYBRID)
+start = time()
 with tex.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
     out = model_fp8(input)
 out.backward(torch.randn(*out.size(), dtype=dtype, device="cuda"))
-print(out)
-print(input.grad)
+torch.cuda.synchronize()
+print(f"Fp8Module cutlass run: {(time() - start) * 1000:.3f} ms")
