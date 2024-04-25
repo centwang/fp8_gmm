@@ -4,10 +4,6 @@ from transformer_engine.pytorch import cpp_extensions as tex
 from transformer_engine.pytorch.module.base import get_workspace
 
 
-def multi_quantize(inputs, outputs, scales, amaxes):
-    backend.multi_quantize(inputs, outputs, scales, amaxes)
-
-
 def _fp8_allocate_output(a, b):
     return torch.empty(a.shape[0], b.shape[1], device=a.device, dtype=torch.bfloat16)
 
@@ -19,6 +15,19 @@ def _to_tex_dtype(dtype):
         return tex.DType.kFloat8E5M2
     else:
         raise ValueError(f"Unsupported dtype: {dtype}")
+
+
+def multi_quantize(inputs, outputs, scales, amaxes):
+    backend.multi_quantize(inputs, outputs, scales, amaxes)
+
+
+def multi_cast_transpose(inputs, outputs, trans_outputs, scales, amaxes, scale_invs, padded):
+    if padded:
+        backend.multi_padded_cast_transpose(inputs, outputs, trans_outputs, scales, amaxes)
+    else:
+        tex.fused_multi_cast_transpose(
+            inputs, scales, outputs, trans_outputs, amaxes, scale_invs, _to_tex_dtype(outputs[0].dtype)
+        )
 
 
 # For FP8 cublasLtMatmul, A must be transposed and B non-transposed (The “TN” format).
@@ -61,7 +70,6 @@ def fp8_gmm(a, b, group_sizes, a_scale_invs, b_scale_invs, c=None, cutlass=True,
         c_groups = [c[cumsum_group_sizes[i] : cumsum_group_sizes[i + 1]] for i in range(num_groups)]
         backend.multi_scale_mul(c_groups, a_scale_invs, b_scale_invs)
     else:
-        workspace = get_workspace()
         for i in range(num_groups):
             cublas_fp8_gemm(
                 a[cumsum_group_sizes[i] : cumsum_group_sizes[i + 1]],
@@ -70,6 +78,6 @@ def fp8_gmm(a, b, group_sizes, a_scale_invs, b_scale_invs, c=None, cutlass=True,
                 a_scale_invs[i],
                 b_scale_invs[i],
                 backward,
-                workspace,
+                get_workspace(),
             )
     return c

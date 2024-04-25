@@ -9,12 +9,22 @@ cwd = Path(os.path.dirname(os.path.abspath(__file__)))
 nvcc_flags = [
     "-std=c++17",  # NOTE: CUTLASS requires c++17
     "-gencode=arch=compute_90a,code=sm_90a",
+    "-O3",
+    "-U__CUDA_NO_HALF_OPERATORS__",
+    "-U__CUDA_NO_HALF_CONVERSIONS__",
+    "-U__CUDA_NO_BFLOAT16_OPERATORS__",
+    "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+    "-U__CUDA_NO_BFLOAT162_OPERATORS__",
+    "-U__CUDA_NO_BFLOAT162_CONVERSIONS__",
+    "--expt-relaxed-constexpr",
+    "--expt-extended-lambda",
+    "--use_fast_math",
 ]
 
 ext_modules = [
     CUDAExtension(
         "fp8_gmm_backend",
-        ["csrc/ops.cu", "csrc/fp8_gmm.cu", "csrc/multi_pointwise.cu"],
+        ["csrc/ops.cu", "csrc/fp8_gmm.cu", "csrc/multi_pointwise.cu", "csrc/multi_padded_cast_transpose.cu"],
         libraries=["cuda"],
         include_dirs=[
             f"{cwd}/third_party/cutlass/include/",
@@ -22,7 +32,7 @@ ext_modules = [
             f"{cwd}/csrc",
         ],
         extra_compile_args={
-            "cxx": ["-fopenmp", "-fPIC", "-Wno-strict-aliasing"],
+            "cxx": ["-fopenmp", "-fPIC", "-Wno-strict-aliasing", "-O3"],
             "nvcc": nvcc_flags,
         },
     )
