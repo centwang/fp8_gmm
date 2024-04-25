@@ -170,6 +170,7 @@ void MultiQuantize(std::vector<at::Tensor> input_list, std::vector<at::Tensor> o
     TORCH_CHECK(input_list[tensor_id].scalar_type() == torch::kBFloat16);
     TORCH_CHECK(output_list[tensor_id].scalar_type() == torch::kFloat8_e4m3fn ||
                 output_list[tensor_id].scalar_type() == torch::kFloat8_e5m2);
+    TORCH_CHECK(input_list[tensor_id].sizes() == output_list[tensor_id].sizes());
     const int num_elements = input_list[tensor_id].numel();
     const int num_blocks = (num_elements + kNumElementsPerBlock - 1) / kNumElementsPerBlock;
     const bool aligned = num_blocks * kNumElementsPerBlock == num_elements;

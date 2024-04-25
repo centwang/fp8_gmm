@@ -189,9 +189,16 @@ void MultiPaddedCastTranspose(std::vector<at::Tensor> input_list, std::vector<at
   kernel_args_unaligned.num_tensors = 0;
   kernel_args_unaligned.block_range[0] = 0;
   for (size_t tensor_id = 0; tensor_id < input_list.size(); ++tensor_id) {
+    TORCH_CHECK(input_list[tensor_id].scalar_type() == torch::kBFloat16);
+    TORCH_CHECK(output_list[tensor_id].scalar_type() == torch::kFloat8_e4m3fn ||
+                output_list[tensor_id].scalar_type() == torch::kFloat8_e5m2);
+    TORCH_CHECK(output_list[tensor_id].scalar_type() == transpose_list[tensor_id].scalar_type());
+    TORCH_CHECK(input_list[tensor_id].sizes() == output_list[tensor_id].sizes());
     const int num_rows = input_list[tensor_id].size(0);
     const int row_length = input_list[tensor_id].size(1);
+    const int trans_rows = transpose_list[tensor_id].size(0);
     const int trans_cols = transpose_list[tensor_id].size(1);
+    TORCH_CHECK(row_length == trans_rows && trans_cols >= num_rows);
     const int num_tiles_m = (num_rows + tile_dim_m - 1) / tile_dim_m;
     const int num_tiles_n = (row_length + tile_dim_n - 1) / tile_dim_n;
     const int num_tiles = num_tiles_m * num_tiles_n;
