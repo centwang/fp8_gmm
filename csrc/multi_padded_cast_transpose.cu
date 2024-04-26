@@ -148,7 +148,7 @@ __global__ void __launch_bounds__(kNumThreadsPerBlock)
         if (col < row_length) {
 #pragma unroll
           for (int i2 = 0; i2 < nvec_out; ++i2) {
-            if (row + i2 < num_rows) {
+            if (row + i2 < padded_rows) {
               transpose[col * padded_rows + row + i2] = shared_transpose[j1][i1].data.elt[i2];
             }
           }
@@ -199,12 +199,13 @@ void MultiPaddedCastTranspose(std::vector<at::Tensor> input_list, std::vector<at
     const int trans_rows = transpose_list[tensor_id].size(0);
     const int trans_cols = transpose_list[tensor_id].size(1);
     TORCH_CHECK(row_length == trans_rows && trans_cols >= num_rows);
-    const int num_tiles_m = (num_rows + tile_dim_m - 1) / tile_dim_m;
+    const int num_tiles_m = (trans_cols + tile_dim_m - 1) / tile_dim_m;
     const int num_tiles_n = (row_length + tile_dim_n - 1) / tile_dim_n;
     const int num_tiles = num_tiles_m * num_tiles_n;
 
     // Figure out whether to use aligned or unaligned kernel
-    const bool aligned = ((num_tiles_m * tile_dim_m == num_rows) && (num_tiles_n * tile_dim_n == row_length));
+    const bool aligned = ((trans_cols == num_rows) && (num_tiles_m * tile_dim_m == trans_cols) &&
+                          (num_tiles_n * tile_dim_n == row_length));
     auto& kernel_args = aligned ? kernel_args_aligned : kernel_args_unaligned;
 
     // Add tensor to kernel argument struct

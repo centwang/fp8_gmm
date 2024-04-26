@@ -60,7 +60,7 @@ class _GroupedLinear(torch.autograd.Function):
         input_t_fp8 = None
         if is_grad_enabled and weight.requires_grad:
             if padded:
-                input_t_fp8 = torch.zeros(padded_cumsums[-1], input.size(1), dtype=torch_dtype, device=input.device)
+                input_t_fp8 = torch.empty(padded_cumsums[-1], input.size(1), dtype=torch_dtype, device=input.device)
             else:
                 input_t_fp8 = torch.empty_like(input_fp8)
         weight_fp8 = torch.empty(*weight.size(), dtype=torch_dtype, device=weight.device)
@@ -164,7 +164,7 @@ class _GroupedLinear(torch.autograd.Function):
         grad_out_t_fp8 = None
         if ctx.weight_requires_grad:
             if padded:
-                grad_out_t_fp8 = torch.zeros(
+                grad_out_t_fp8 = torch.empty(
                     padded_cumsums[-1], grad_out.size(1), dtype=torch_grad_out_dtype, device=grad_out.device
                 )
             else:
@@ -227,7 +227,6 @@ class _GroupedLinear(torch.autograd.Function):
                     grad_out_scale_invs[i],
                     fw_scale_inv[_meta_forward_input_offset(i)],
                     True,
-                    get_workspace(),
                 )
         return (grad_input, grad_weight, None, None, None, None)
 

@@ -31,7 +31,8 @@ def multi_cast_transpose(inputs, outputs, trans_outputs, scales, amaxes, scale_i
 
 
 # For FP8 cublasLtMatmul, A must be transposed and B non-transposed (The “TN” format).
-def cublas_fp8_gemm(a, b, c, a_scale_inv, b_scale_inv, backward, workspace):
+def cublas_fp8_gemm(a, b, c, a_scale_inv, b_scale_inv, backward):
+    workspace = get_workspace()
     tex.te_gemm(
         b,
         b_scale_inv,
@@ -78,6 +79,5 @@ def fp8_gmm(a, b, group_sizes, a_scale_invs, b_scale_invs, c=None, cutlass=True,
                 a_scale_invs[i],
                 b_scale_invs[i],
                 backward,
-                get_workspace(),
             )
     return c
