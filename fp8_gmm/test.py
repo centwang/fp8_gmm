@@ -15,7 +15,7 @@ class TestBackend(unittest.TestCase):
             (torch.float8_e5m2, False),
         ]
     )
-    def test_multi_padded_cast_transpose(self, dtype, padded):
+    def test_multi_pad_cast_transpose(self, dtype, padded):
         shapes = [
             (2048, 12288),
             (768, 1024),

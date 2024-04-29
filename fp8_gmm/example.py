@@ -8,7 +8,7 @@ import transformer_engine.pytorch as tex
 from megablocks import grouped_gemm_util as gg_util
 from transformer_engine.common import recipe
 
-from fp8_gmm import ops as fp8_gmm_ops
+from fp8_gmm.grouped_linear import GroupedLinear
 
 
 def topk(scores, top_k, moe_renorm=False):
@@ -81,8 +81,8 @@ class Fp8Module(torch.nn.Module):
         self.top_k = top_k
         self.sort_end_bit = max(int(np.ceil(np.log2(n_experts))), 1)
         self.gating_network = torch.nn.Linear(n_embd, n_experts, bias=False).to(dtype).to("cuda")
-        self.grouped_linear1 = fp8_gmm_ops.GroupedLinear(n_embd, n_inner, n_experts, dtype=dtype, cutlass=cutlass)
-        self.grouped_linear2 = fp8_gmm_ops.GroupedLinear(n_inner, n_embd, n_experts, dtype=dtype, cutlass=cutlass)
+        self.grouped_linear1 = GroupedLinear(n_embd, n_inner, n_experts, dtype=dtype, cutlass=cutlass)
+        self.grouped_linear2 = GroupedLinear(n_inner, n_embd, n_experts, dtype=dtype, cutlass=cutlass)
         self.act = torch.nn.GELU()
 
     def compute(self, x, tokens_per_expert, indices, bin_ids, expert_weights, bins, top_k):

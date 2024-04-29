@@ -1,0 +1,12 @@
+{
+    "files.associations": {
+        "MLTable": "yaml",
+        "*.cu": "cpp",
+        "*.cuh": "cpp",
+        "random": "cpp",
+        "thread": "cpp",
+        "__locale": "cpp",
+        "locale": "cpp",
+        "*.tcc": "cpp"
+    }
+}

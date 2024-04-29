@@ -33,7 +33,7 @@ To solve above problems:
 - The fused kernel will perform both casting and permutation, as well as computing Amax for each sub-tensor.
 - The fused kernel will also pad sub-tensors with 0 so that the K for each sub-tensor can be devided by 16.
 
-The implementation of this fused kernel is in [multi_padded_cast_transpose.cu](https://github.com/er3x3/fp8_gmm/blob/main/csrc/multi_padded_cast_transpose.cu). Below shows the performance profling result (2 kernels are launched, one for aligned data input, which is the vectorized version, one for non-aligned data input).
+The implementation of this fused kernel is in [multi_pad_cast_transpose.cu](https://github.com/er3x3/fp8_gmm/blob/main/csrc/multi_pad_fusion.cu). Below shows the performance profling result (2 kernels are launched, one for aligned data input, which is the vectorized version, one for non-aligned data input).
 
 ![image](https://github.com/er3x3/fp8_gmm/assets/11661208/9526dddd-d9f4-4751-a574-8bc0747f2915)
 
