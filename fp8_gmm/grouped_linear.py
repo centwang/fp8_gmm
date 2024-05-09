@@ -5,7 +5,7 @@ from transformer_engine.pytorch.fp8 import get_fp8_te_dtype
 from transformer_engine.pytorch.module.base import TransformerEngineBaseModule
 
 from .backend import cublas_fp8_gemm, fp8_gmm, multi_cast_transpose, multi_quantize
-from .utils import Fp8MetaWrapper, cumsum_group_sizes, to_torch_dtype
+from .utils import Fp8MetaWrapper, Fp8TensorType, MetaTensorType, cumsum_group_sizes, to_torch_dtype
 
 
 class _GroupedLinear(torch.autograd.Function):
@@ -50,13 +50,17 @@ class _GroupedLinear(torch.autograd.Function):
                         for i in range(num_groups)
                     ]
                 )
-            cast_trans_scales.extend(fp8_meta_wrapper.input_group1_scales)
-            cast_trans_amaxes.extend(fp8_meta_wrapper.input_group1_amaxes)
+            cast_trans_scales.extend(
+                fp8_meta_wrapper.get_meta_tensors(Fp8TensorType.kInputGroup1, MetaTensorType.kScale)
+            )
+            cast_trans_amaxes.extend(
+                fp8_meta_wrapper.get_meta_tensors(Fp8TensorType.kInputGroup1, MetaTensorType.kAmax)
+            )
         else:
             casts.extend(input[cumsums[i] : cumsums[i + 1]] for i in range(num_groups))
             cast_fp8s.extend([input_fp8[cumsums[i] : cumsums[i + 1]] for i in range(num_groups)])
-            cast_scales.extend(fp8_meta_wrapper.input_group1_scales)
-            cast_amaxes.extend(fp8_meta_wrapper.input_group1_amaxes)
+            cast_scales.extend(fp8_meta_wrapper.get_meta_tensors(Fp8TensorType.kInputGroup1, MetaTensorType.kScale))
+            cast_amaxes.extend(fp8_meta_wrapper.get_meta_tensors(Fp8TensorType.kInputGroup1, MetaTensorType.kAmax))
         weight_fp8 = torch.empty(*weight.size(), dtype=torch_dtype, device=weight.device)
         weight_t_fp8 = None
         if is_grad_enabled and input.requires_grad:
@@ -67,29 +71,27 @@ class _GroupedLinear(torch.autograd.Function):
                 num_groups, weight.size(2), weight.size(1), dtype=torch_dtype, device=weight.device
             )
             cast_trans_t_fp8s.extend([weight_t_fp8[i] for i in range(num_groups)])
-            cast_trans_scales.extend(fp8_meta_wrapper.weight_group1_scales)
-            cast_trans_amaxes.extend(fp8_meta_wrapper.weight_group1_amaxes)
+            cast_trans_scales.extend(
+                fp8_meta_wrapper.get_meta_tensors(Fp8TensorType.kWeightGroup1, MetaTensorType.kScale)
+            )
+            cast_trans_amaxes.extend(
+                fp8_meta_wrapper.get_meta_tensors(Fp8TensorType.kWeightGroup1, MetaTensorType.kAmax)
+            )
         else:
             casts.extend(weight[i] for i in range(num_groups))
             cast_fp8s.extend([weight_fp8[i] for i in range(num_groups)])
-            cast_scales.extend(fp8_meta_wrapper.weight_group1_scales)
-            cast_amaxes.extend(fp8_meta_wrapper.weight_group1_amaxes)
+            cast_scales.extend(fp8_meta_wrapper.get_meta_tensors(Fp8TensorType.kWeightGroup1, MetaTensorType.kScale))
+            cast_amaxes.extend(fp8_meta_wrapper.get_meta_tensors(Fp8TensorType.kWeightGroup1, MetaTensorType.kAmax))
         if len(casts) > 0:
             multi_quantize(casts, cast_fp8s, cast_scales, cast_amaxes)
         if len(cast_trans) > 0:
-            multi_cast_transpose(
-                cast_trans,
-                cast_trans_fp8s,
-                cast_trans_t_fp8s,
-                cast_trans_scales,
-                cast_trans_amaxes,
-            )
+            multi_cast_transpose(cast_trans, cast_trans_fp8s, cast_trans_t_fp8s, cast_trans_scales, cast_trans_amaxes)
         out = fp8_gmm(
             input_fp8,
             weight_fp8,
             group_sizes,
-            fp8_meta_wrapper.input_group1_scale_invs(),
-            fp8_meta_wrapper.weight_group1_scale_invs(),
+            fp8_meta_wrapper.get_meta_tensors(Fp8TensorType.kInputGroup1, MetaTensorType.kScaleInv),
+            fp8_meta_wrapper.get_meta_tensors(Fp8TensorType.kWeightGroup1, MetaTensorType.kScaleInv),
             backward=False,
             cutlass=cutlass,
         )
@@ -122,8 +124,8 @@ class _GroupedLinear(torch.autograd.Function):
         grad_out_dtype = get_fp8_te_dtype(fp8_meta["recipe"], fprop_tensor=False)
         torch_grad_out_dtype = to_torch_dtype(grad_out_dtype)
         grad_outs = [grad_out[cumsums[i] : cumsums[i + 1]] for i in range(num_groups)]
-        grad_out_scales = fp8_meta_wrapper.grad_output_group1_scales()
-        grad_out_amaxes = fp8_meta_wrapper.grad_output_group1_amaxes()
+        grad_out_scales = fp8_meta_wrapper.get_meta_tensors(Fp8TensorType.kGradOutputGroup1, MetaTensorType.kScale)
+        grad_out_amaxes = fp8_meta_wrapper.get_meta_tensors(Fp8TensorType.kGradOutputGroup1, MetaTensorType.kAmax)
         grad_out_fp8 = torch.empty(*grad_out.size(), dtype=torch_grad_out_dtype, device=grad_out.device)
         grad_out_fp8s = [grad_out_fp8[cumsums[i] : cumsums[i + 1]] for i in range(num_groups)]
         grad_out_t_fp8 = None
@@ -145,14 +147,7 @@ class _GroupedLinear(torch.autograd.Function):
                     grad_out_t_fp8[cumsums[i] : cumsums[i + 1]].view(-1, cumsums[i + 1] - cumsums[i])
                     for i in range(num_groups)
                 ]
-        if ctx.weight_requires_grad:
-            multi_cast_transpose(
-                grad_outs,
-                grad_out_fp8s,
-                grad_out_t_fp8s,
-                grad_out_scales,
-                grad_out_amaxes,
-            )
+            multi_cast_transpose(grad_outs, grad_out_fp8s, grad_out_t_fp8s, grad_out_scales, grad_out_amaxes)
         else:
             multi_quantize(grad_outs, grad_out_fp8s, grad_out_scales, grad_out_amaxes)
         grad_input = None
@@ -161,27 +156,25 @@ class _GroupedLinear(torch.autograd.Function):
                 grad_out_fp8,
                 weight_t_fp8,
                 group_sizes,
-                fp8_meta_wrapper.grad_output_group1_scale_invs(),
-                fp8_meta_wrapper.forward_weight_group1_scale_invs(),
+                fp8_meta_wrapper.get_meta_tensors(Fp8TensorType.kGradOutputGroup1, MetaTensorType.kScaleInv),
+                fp8_meta_wrapper.get_meta_tensors(Fp8TensorType.kForwardWeightGroup1, MetaTensorType.kScaleInv),
                 backward=True,
                 cutlass=cutlass,
             )
         grad_weight = None
         if ctx.weight_requires_grad:
-            grad_weight = torch.empty(
-                *ctx.weight_shape,
-                dtype=torch.bfloat16,
-                device=weight_t_fp8.device,
+            grad_weight = torch.empty(*ctx.weight_shape, dtype=torch.bfloat16, device=weight_t_fp8.device)
+            grad_out_scale_invs = fp8_meta_wrapper.get_meta_tensors(
+                Fp8TensorType.kGradOutputGroup1, MetaTensorType.kScaleInv
             )
-            grad_out_scale_invs = fp8_meta_wrapper.grad_output_group1_scale_invs()
-            forward_input_scale_invs = fp8_meta_wrapper.forward_input_group1_scale_invs()
+            forward_input_scale_invs = fp8_meta_wrapper.get_meta_tensors(
+                Fp8TensorType.kForwardInputGroup1, MetaTensorType.kScaleInv
+            )
             for i in range(num_groups):
                 start, end = (padded_cumsums[i], padded_cumsums[i + 1]) if padded else (cumsums[i], cumsums[i + 1])
-                a = grad_out_t_fp8s[i]
-                b = input_t_fp8[start:end].view(-1, end - start)
                 cublas_fp8_gemm(
-                    a,
-                    b,
+                    grad_out_t_fp8s[i],
+                    input_t_fp8[start:end].view(-1, end - start),
                     grad_weight[i],
                     grad_out_scale_invs[i],
                     forward_input_scale_invs[i],
@@ -201,11 +194,7 @@ class GroupedLinear(TransformerEngineBaseModule):
         self.weight_tensor = torch.nn.Parameter(
             torch.empty(num_groups, out_features, in_features, dtype=dtype, device=device)
         )
-        torch.nn.init.uniform_(
-            self.weight_tensor.data,
-            -math.sqrt(1.0 / in_features),
-            math.sqrt(1.0 / in_features),
-        )
+        torch.nn.init.uniform_(self.weight_tensor.data, -math.sqrt(1.0 / in_features), math.sqrt(1.0 / in_features))
         self.cutlass = cutlass
 
     def get_fp8_weights_scratchpad(self, is_first_microbatch):
@@ -221,12 +210,5 @@ class GroupedLinear(TransformerEngineBaseModule):
             else:
                 fn = _GroupedLinear.forward
                 args = [None]
-            args += [
-                input,
-                self.weight_tensor,
-                group_sizes,
-                self.fp8_meta,
-                torch.is_grad_enabled(),
-                self.cutlass,
-            ]
+            args += [input, self.weight_tensor, group_sizes, self.fp8_meta, torch.is_grad_enabled(), self.cutlass]
             return fn(*args)

@@ -1,9 +1,8 @@
 import unittest
 
 import torch
-from parameterized import parameterized
-
 from fp8_gmm import backend
+from parameterized import parameterized
 
 
 class TestBackend(unittest.TestCase):
