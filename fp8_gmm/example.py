@@ -1,15 +1,15 @@
 import math
 from time import time
 
-import numpy as np
-
 import megablocks.ops as mega_ops
+import numpy as np
 import torch
 import transformer_engine.pytorch as tex
-from fp8_gmm.grouped_linear import GroupedLinear
-from fp8_gmm.grouped_mlp import GroupedMlp
 from megablocks import grouped_gemm_util as gg_util
 from transformer_engine.common import recipe
+
+from fp8_gmm.grouped_linear import GroupedLinear
+from fp8_gmm.grouped_mlp import GroupedMlp
 
 
 def topk(scores, top_k, moe_renorm=False):
@@ -134,6 +134,7 @@ class Fp8MlpModule(torch.nn.Module):
 num_tokens, hidden_states, num_inner, num_experts, top_k = 16384, 4096, 6400, 16, 2
 dtype = torch.bfloat16
 warmup_steps, run_steps = 4, 16
+# warmup_steps, run_steps = 1, 1
 
 # Bf16Module run.
 model_bf16 = Bf16Module(hidden_states, num_inner, num_experts, top_k).to(dtype).to("cuda")

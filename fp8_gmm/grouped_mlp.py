@@ -249,7 +249,9 @@ class _GroupedMlp(torch.autograd.Function):
         # Maybe need a new kernel for cast_dgelu only when weight requires no grad.
         grad_gelu_outs = [grad_gelu_out[cumsums[i] : cumsums[i + 1]] for i in range(num_groups)]
         pre_gelu_outs = [pre_gelu_out[cumsums[i] : cumsums[i + 1]] for i in range(num_groups)]
-        grad_pre_gelu_out_fp8 = torch.empty(*pre_gelu_out.size(), dtype=torch_grad_out_dtype, device=pre_gelu_out.device)
+        grad_pre_gelu_out_fp8 = torch.empty(
+            *pre_gelu_out.size(), dtype=torch_grad_out_dtype, device=pre_gelu_out.device
+        )
         grad_pre_gelu_out_fp8s = [grad_pre_gelu_out_fp8[cumsums[i] : cumsums[i + 1]] for i in range(num_groups)]
         grad_pre_gelu_out_t_fp8 = None
         grad_pre_gelu_out_t_fp8s = []

@@ -179,6 +179,7 @@ __device__ __forceinline__ compute_t reduce_max(const compute_t m, const int war
   return result;
 }
 
+// Works only on positive values.
 __device__ __forceinline__ void atomicMaxFloat(fp32* addr, const fp32 value) {
   atomicMax(reinterpret_cast<int*>(addr), __float_as_int(value));
 }

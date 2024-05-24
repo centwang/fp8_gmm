@@ -7,7 +7,7 @@ namespace fp8_gmm {
 namespace {
 
 // Parameters to tune
-constexpr int kNumWarpsPerTile = 4;
+constexpr int kNumWarpsPerTile = 8;
 constexpr int kNumThreadsPerBlock = THREADS_PER_WARP * kNumWarpsPerTile;
 constexpr int kDesiredLoadSize = 8;
 constexpr int kDesiredStoreSize = 8;

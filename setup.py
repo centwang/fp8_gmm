@@ -19,6 +19,8 @@ nvcc_flags = [
     "--expt-relaxed-constexpr",
     "--expt-extended-lambda",
     "--use_fast_math",
+    # "--source-in-ptx",
+    # "--generate-line-info",
 ]
 
 ext_modules = [
