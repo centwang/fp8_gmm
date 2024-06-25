@@ -17,7 +17,7 @@ from .utils import Fp8MetaWrapper, Fp8TensorType, MetaTensorType, cumsum_group_s
 
 class _GroupedMlp(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, input, fc1_weight, fc2_weight, group_sizes, fp8_meta, is_grad_enabled):
+    def forward(ctx, input, fc1_weight, fc2_weight, group_sizes, fp8_meta, is_grad_enabled, has_tp, tp_group):
         input_requires_grad = input.requires_grad
         weight_requires_grad = fc1_weight.requires_grad
         need_padding = is_grad_enabled and weight_requires_grad
@@ -160,6 +160,10 @@ class _GroupedMlp(torch.autograd.Function):
             ctx.fc2_weight_shape = fc2_weight.size()
             ctx.input_requires_grad = input_requires_grad
             ctx.weight_requires_grad = weight_requires_grad
+            ctx.has_tp = has_tp
+            if has_tp:
+                assert tp_group is not None
+            ctx.tp_group = tp_group
         return out
 
     @staticmethod
@@ -282,6 +286,7 @@ class _GroupedMlp(torch.autograd.Function):
             pre_gelu_out_amaxes,
         )
         grad_input = None
+        handle = None
         if ctx.input_requires_grad:
             grad_input = fp8_gmm(
                 grad_pre_gelu_out_fp8,
@@ -292,6 +297,10 @@ class _GroupedMlp(torch.autograd.Function):
                 backward=True,
                 cutlass=False,  # Cultass kernel doesn't have Gelu fusion.
             )
+            if ctx.has_tp:
+                handle = torch.distributed.all_reduce(
+                    grad_input, op=torch.distributed.ReduceOp.SUM, group=ctx.tp_group, async_op=True
+                )
         grad_fc1_weight = None
         if ctx.weight_requires_grad:
             grad_fc1_weight = torch.empty(*ctx.fc1_weight_shape, dtype=torch.bfloat16, device=fc2_weight_t_fp8.device)
@@ -311,7 +320,9 @@ class _GroupedMlp(torch.autograd.Function):
                     fw_input_scale_inv[i],
                     backward=True,
                 )
-        return (grad_input, grad_fc1_weight, grad_fc2_weight, None, None, None)
+        if handle is not None:
+            handle.wait()
+        return (grad_input, grad_fc1_weight, grad_fc2_weight, None, None, None, None, None)
 
 
 class GroupedMlp(TransformerEngineBaseModule):
@@ -319,8 +330,6 @@ class GroupedMlp(TransformerEngineBaseModule):
         super().__init__()
         # Support bfloat16 only for now.
         assert dtype == torch.bfloat16
-        self.in_features = in_features
-        self.out_features = out_features
         self.num_groups = num_groups
         self.fc1_weight = torch.nn.Parameter(
             torch.empty(num_groups, out_features, in_features, dtype=dtype, device=device)
@@ -335,7 +344,7 @@ class GroupedMlp(TransformerEngineBaseModule):
         assert is_first_microbatch is None
         return [None, None, None, None]
 
-    def forward(self, input, group_sizes, is_first_microbatch=None):
+    def forward(self, input, group_sizes, has_tp=False, tp_group=None, is_first_microbatch=None):
         assert 0 not in group_sizes
         with self.prepare_forward(input, is_first_microbatch, self.num_groups * 2):
             if torch.is_grad_enabled():
@@ -344,5 +353,14 @@ class GroupedMlp(TransformerEngineBaseModule):
             else:
                 fn = _GroupedMlp.forward
                 args = [None]
-            args += [input, self.fc1_weight, self.fc2_weight, group_sizes, self.fp8_meta, torch.is_grad_enabled()]
+            args += [
+                input,
+                self.fc1_weight,
+                self.fc2_weight,
+                group_sizes,
+                self.fp8_meta,
+                torch.is_grad_enabled(),
+                has_tp,
+                tp_group,
+            ]
             return fn(*args)
